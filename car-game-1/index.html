@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Green Car Adventure</title>
+  <style>
+    body {
+      margin: 0;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      background-color: #87CEEB;
+      font-family: Arial, sans-serif;
+    }
+
+    canvas {
+      border: 4px solid #333;
+      border-radius: 8px;
+      touch-action: none;
+    }
+
+    #gameContainer {
+      text-align: center;
+    }
+
+    h1 {
+      color: #333;
+      font-size: 24px;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="gameContainer">
+    <h1>Green Car Adventure!</h1>
+    <canvas id="gameCanvas" width="400" height="400"></canvas>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // Audio setup
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    let engineOscillator = null;
+    let engineGain = null;
+    let isEngineSoundPlaying = false;
+
+    function createEngineSound() {
+      if (engineOscillator) return;
+      
+      engineOscillator = audioContext.createOscillator();
+      engineGain = audioContext.createGain();
+      
+      engineOscillator.type = 'sawtooth';
+      engineOscillator.frequency.setValueAtTime(50, audioContext.currentTime);
+      engineGain.gain.setValueAtTime(0, audioContext.currentTime);
+      
+      engineOscillator.connect(engineGain);
+      engineGain.connect(audioContext.destination);
+      engineOscillator.start();
+    }
+
+    function updateEngineSound(isMoving) {
+      if (!engineOscillator) createEngineSound();
+      
+      const currentTime = audioContext.currentTime;
+      if (isMoving && !isEngineSoundPlaying) {
+        engineOscillator.frequency.setValueAtTime(80, currentTime);
+        engineGain.gain.setValueAtTime(0, currentTime);
+        engineGain.gain.linearRampToValueAtTime(0.15, currentTime + 0.1);
+        engineOscillator.frequency.linearRampToValueAtTime(150, currentTime + 0.1);
+        isEngineSoundPlaying = true;
+      } else if (!isMoving && isEngineSoundPlaying) {
+        engineGain.gain.linearRampToValueAtTime(0, currentTime + 0.2);
+        engineOscillator.frequency.linearRampToValueAtTime(80, currentTime + 0.2);
+        isEngineSoundPlaying = false;
+      }
+    }
+
+    function playTone(frequency, duration = 0.1, type = 'sine', attackTime = 0.01, decayTime = 0.1, sustainLevel = 0.1) {
+      const oscillator = audioContext.createOscillator();
+      const gainNode = audioContext.createGain();
+      
+      oscillator.frequency.value = frequency;
+      oscillator.type = type;
+
+      const now = audioContext.currentTime;
+      
+      // ADSR envelope
+      gainNode.gain.setValueAtTime(0, now);
+      gainNode.gain.linearRampToValueAtTime(0.3, now + attackTime);
+      gainNode.gain.linearRampToValueAtTime(sustainLevel, now + attackTime + decayTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+
+      oscillator.connect(gainNode);
+      gainNode.connect(audioContext.destination);
+
+      oscillator.start(now);
+      oscillator.stop(now + duration);
+    }
+
+    function playSequence(frequencies, duration, interval = 0.1, type = 'sine') {
+      frequencies.forEach((freq, index) => {
+        setTimeout(() => playTone(freq, duration, type), interval * index);
+      });
+    }
+
+    // Musical notes for each color (pentatonic scale for pleasant combinations)
+    const colorNotes = {
+      '#FF4444': 523.25,  // C5 - Red
+      '#FF8C42': 587.33,  // D5 - Orange
+      '#FFD700': 659.25,  // E5 - Yellow
+      '#FF69B4': 783.99,  // G5 - Pink
+      '#00CED1': 880.00   // A5 - Turquoise
+    };
+
+    // Sound effects
+    const sounds = {
+      move: () => {}, // Removed individual move sound in favor of continuous engine sound
+      collision: (color) => {
+        const baseFreq = colorNotes[color] || 440;
+        playTone(baseFreq, 0.2, 'sine', 0.01, 0.1, 0.2);
+        setTimeout(() => playTone(baseFreq * 1.5, 0.1, 'sine', 0.01, 0.05, 0.1), 50);
+      },
+      score: () => playSequence([523.25, 659.25, 783.99], 0.1, 0.08, 'sine'),
+      gameOver: () => {
+        playSequence([440, 349.23, 293.66, 246.94], 0.3, 0.2, 'sawtooth');
+      }
+    };
+
+    const car = {
+      x: canvas.width / 2,
+      y: canvas.height - 60,
+      width: 40,
+      height: 60,
+      speed: 3,
+      velocityX: 0,
+      maxSpeed: 3,
+      acceleration: 0.2,
+      deceleration: 0.1
+    };
+
+    const road = {
+      width: 300,
+      x: 50,
+      lineY: 0
+    };
+
+    // Tree settings
+    const trees = {
+      left: {
+        x: 0,
+        width: road.x,
+        spacing: 120,
+        sizes: [40, 50, 60],
+        instances: []
+      },
+      right: {
+        x: road.x + road.width,
+        width: canvas.width - (road.x + road.width),
+        spacing: 120,
+        sizes: [40, 50, 60],
+        instances: []
+      }
+    };
+
+    function generateTrees() {
+      // Clear existing trees
+      trees.left.instances = [];
+      trees.right.instances = [];
+
+      // Generate left side trees
+      for (let y = -50; y < canvas.height; y += trees.left.spacing) {
+        trees.left.instances.push({
+          x: trees.left.x + Math.random() * (trees.left.width - trees.left.sizes[0]),
+          y: y,
+          size: trees.left.sizes[Math.floor(Math.random() * trees.left.sizes.length)]
+        });
+      }
+
+      // Generate right side trees
+      for (let y = -50; y < canvas.height; y += trees.right.spacing) {
+        trees.right.instances.push({
+          x: trees.right.x + Math.random() * (trees.right.width - trees.right.sizes[0]),
+          y: y,
+          size: trees.right.sizes[Math.floor(Math.random() * trees.right.sizes.length)]
+        });
+      }
+    }
+
+    // Obstacle colors
+    const obstacleColors = ['#FF4444', '#FF8C42', '#FFD700', '#FF69B4', '#00CED1'];
+
+    let obstacles = [];
+    let isGameOver = false;
+    let score = 0;
+    let obstacleSpeed = 1.5;  // Reduced from 3 to 1.5
+    let lastObstacleTime = 0;
+    let obstacleInterval = 3000; // Increased from 2000 to 3000 milliseconds
+
+    let isMovingLeft = false;
+    let isMovingRight = false;
+
+    function createObstacle() {
+      const minWidth = 40;
+      const maxWidth = 80;
+      const width = Math.random() * (maxWidth - minWidth) + minWidth;
+      const x = Math.random() * (road.width - width) + road.x;
+      const color = obstacleColors[Math.floor(Math.random() * obstacleColors.length)];
+
+      obstacles.push({
+        x: x,
+        y: -50,
+        width: width,
+        height: 40,
+        color: color
+      });
+    }
+
+    function updateTrees() {
+      const treeSpeed = obstacleSpeed * 0.7; // Trees move slightly slower than obstacles
+
+      // Update left trees
+      trees.left.instances.forEach(tree => {
+        tree.y += treeSpeed;
+        if (tree.y > canvas.height + tree.size) {
+          tree.y = -tree.size;
+          tree.x = trees.left.x + Math.random() * (trees.left.width - tree.size);
+          tree.size = trees.left.sizes[Math.floor(Math.random() * trees.left.sizes.length)];
+        }
+      });
+
+      // Update right trees
+      trees.right.instances.forEach(tree => {
+        tree.y += treeSpeed;
+        if (tree.y > canvas.height + tree.size) {
+          tree.y = -tree.size;
+          tree.x = trees.right.x + Math.random() * (trees.right.width - tree.size);
+          tree.size = trees.right.sizes[Math.floor(Math.random() * trees.right.sizes.length)];
+        }
+      });
+    }
+
+    function updateObstacles() {
+      const currentTime = Date.now();
+
+      if (currentTime - lastObstacleTime > obstacleInterval) {
+        createObstacle();
+        lastObstacleTime = currentTime;
+      }
+
+      for (let i = obstacles.length - 1; i >= 0; i--) {
+        obstacles[i].y += obstacleSpeed;
+
+        // Remove obstacles that are off screen without scoring
+        if (obstacles[i].y > canvas.height) {
+          obstacles.splice(i, 1);
+        }
+      }
+    }
+
+    function drawObstacles() {
+      obstacles.forEach(obstacle => {
+        ctx.fillStyle = obstacle.color;
+        ctx.fillRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height);
+      });
+    }
+
+    function checkCollision(rect1, rect2) {
+      return rect1.x < rect2.x + rect2.width &&
+        rect1.x + rect1.width > rect2.x &&
+        rect1.y < rect2.y + rect2.height &&
+        rect1.y + rect1.height > rect2.y;
+    }
+
+    function drawTree(x, y, size) {
+      // Tree trunk
+      ctx.fillStyle = '#8B4513';
+      ctx.fillRect(x + size/4, y, size/2, size);
+      
+      // Tree leaves
+      ctx.beginPath();
+      ctx.arc(x + size/2, y - size/4, size/2, 0, Math.PI * 2);
+      ctx.fillStyle = '#228B22';
+      ctx.fill();
+    }
+
+    function drawRoad() {
+      // Draw grass
+      ctx.fillStyle = '#90EE90';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // Draw trees from stored instances
+      trees.left.instances.forEach(tree => {
+        drawTree(tree.x, tree.y, tree.size);
+      });
+
+      trees.right.instances.forEach(tree => {
+        drawTree(tree.x, tree.y, tree.size);
+      });
+
+      // Draw road
+      ctx.fillStyle = '#808080';
+      ctx.fillRect(road.x, 0, road.width, canvas.height);
+
+      // Draw moving road lines
+      ctx.strokeStyle = '#FFFFFF';
+      ctx.setLineDash([20, 20]);
+      ctx.beginPath();
+      
+      // Update line position
+      road.lineY = (road.lineY + obstacleSpeed) % 40; // 40 is the combined length of dash and gap
+      
+      // Draw multiple lines to create continuous effect
+      for (let y = road.lineY - 40; y < canvas.height; y += 40) {
+        ctx.beginPath();
+        ctx.moveTo(canvas.width / 2, y);
+        ctx.lineTo(canvas.width / 2, y + 20);
+        ctx.stroke();
+      }
+      
+      ctx.setLineDash([]);
+    }
+
+    function drawCar() {
+      // Car body
+      ctx.fillStyle = '#32CD32';
+      ctx.fillRect(car.x, car.y, car.width, car.height);
+
+      // Windows
+      ctx.fillStyle = '#87CEEB';
+      ctx.fillRect(car.x + 5, car.y + 10, car.width - 10, 15);
+
+      // Wheels
+      ctx.fillStyle = '#000000';
+      ctx.fillRect(car.x - 2, car.y + 10, 5, 15);
+      ctx.fillRect(car.x - 2, car.y + 40, 5, 15);
+      ctx.fillRect(car.x + car.width - 3, car.y + 10, 5, 15);
+      ctx.fillRect(car.x + car.width - 3, car.y + 40, 5, 15);
+    }
+
+    function updateGame() {
+      if (!isGameOver) {
+        if (isMovingLeft && car.x > road.x) {
+          car.velocityX = Math.max(car.velocityX - car.acceleration, -car.maxSpeed);
+        } else if (isMovingRight && car.x + car.width < road.x + road.width) {
+          car.velocityX = Math.min(car.velocityX + car.acceleration, car.maxSpeed);
+        } else {
+          if (car.velocityX > 0) {
+            car.velocityX = Math.max(car.velocityX - car.deceleration, 0);
+          } else if (car.velocityX < 0) {
+            car.velocityX = Math.min(car.velocityX + car.deceleration, 0);
+          }
+        }
+        
+        car.x += car.velocityX;
+        
+        // Keep car within road boundaries
+        if (car.x < road.x) {
+          car.x = road.x;
+          car.velocityX = 0;
+        } else if (car.x + car.width > road.x + road.width) {
+          car.x = road.x + road.width - car.width;
+          car.velocityX = 0;
+        }
+
+        updateEngineSound(car.velocityX !== 0);
+
+        updateObstacles();
+        updateTrees();
+
+        // Check for collisions
+        for (let i = obstacles.length - 1; i >= 0; i--) {
+          if (checkCollision(car, obstacles[i])) {
+            const obstacleColor = obstacles[i].color;
+            obstacles.splice(i, 1); // Remove the obstacle
+            score += 2; // Bonus points for destroying obstacle
+            sounds.collision(obstacleColor);
+            sounds.score();
+          }
+        }
+      }
+
+      // Draw everything
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      drawRoad();
+      drawObstacles();
+      drawCar();
+
+      // Draw score
+      ctx.fillStyle = '#333';
+      ctx.font = '20px Arial';
+      ctx.fillText(`Score: ${score}`, 10, 30);
+
+      // Draw game over message
+      if (isGameOver) {
+        sounds.gameOver();
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#FFF';
+        ctx.font = '40px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('Game Over!', canvas.width / 2, canvas.height / 2);
+        ctx.font = '20px Arial';
+        ctx.fillText(`Final Score: ${score}`, canvas.width / 2, canvas.height / 2 + 40);
+        ctx.fillText('Click to restart', canvas.width / 2, canvas.height / 2 + 80);
+      }
+
+      requestAnimationFrame(updateGame);
+    }
+
+    // Keyboard controls
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowLeft') {
+        isMovingLeft = true;
+        isMovingRight = false;
+      }
+      if (e.key === 'ArrowRight') {
+        isMovingRight = true;
+        isMovingLeft = false;
+      }
+    });
+
+    document.addEventListener('keyup', (e) => {
+      if (e.key === 'ArrowLeft') isMovingLeft = false;
+      if (e.key === 'ArrowRight') isMovingRight = false;
+    });
+
+    // Mouse/touch controls
+    canvas.addEventListener('pointerdown', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      if (x < canvas.width / 2) {
+        isMovingLeft = true;
+        isMovingRight = false;
+      } else {
+        isMovingRight = true;
+        isMovingLeft = false;
+      }
+    });
+
+    canvas.addEventListener('pointerup', () => {
+      isMovingLeft = false;
+      isMovingRight = false;
+    });
+
+    // Restart game on click when game over
+    canvas.addEventListener('click', () => {
+      if (isGameOver) {
+        // Stop and cleanup engine sound
+        if (engineOscillator) {
+          engineOscillator.stop();
+          engineOscillator = null;
+          engineGain = null;
+          isEngineSoundPlaying = false;
+        }
+        
+        isGameOver = false;
+        obstacles = [];
+        score = 0;
+        car.x = canvas.width / 2;
+        lastObstacleTime = Date.now();
+        road.lineY = 0; // Reset line position
+        generateTrees(); // Regenerate trees on game restart
+      }
+    });
+
+    // Generate initial trees and start the game
+    generateTrees();
+    updateGame();
+  </script>
+</body>
+
+</html>
